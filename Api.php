@@ -1,222 +1,267 @@
 <?php
 /**
- * Api.php - \Callicore\Twitter\Api
+ * Api.php
  *
  * This is released under the MIT, see license.txt for details
  *
  * @author       Elizabeth Smith <auroraeosrose@php.net>
  * @copyright    Elizabeth Smith (c)2009
- * @link         http://callicore.net
+ * @link         http://elizabethmariesmith.com/slides
  * @license      http://www.opensource.org/licenses/mit-license.php MIT
- * @version      $Id: Api.php 21 2009-04-26 01:18:00Z auroraeosrose $
- * @since        Php 5.3.0
- * @package      callicore
- * @subpackage   twitter
+ * @version      0.2.0
+ * @package      Php-Twit
+ * @subpackage   Lib
  * @filesource
  */
 
 /**
- * Namespace for this application
- */
-namespace Callicore\Twitter;
-
-/**
- * This is a PHP streams based class for accessing the twitter API
+ * Api - very simple wrapper for twitter API
  *
- * At some point it might be nice to have sockets, streams, curl options
- * but that might be overkill
+ * Uses PHP streams to make REST requests
+ * only does authenticated requests
+ *
+ * gets friends, user and mention timeline
+ * does posting simple new tweets
  */
 class Api {
 
     /**
-     * stores current logged in status
-     * @var boolean
-     */
-    protected $login = false;
-
-    /**
-     * Username in use for requests
+     * Username for authentication
+     *
      * @var string
      */
     protected $username;
+
     /**
-     * Password in use for requests
+     * password for authentication
+     *
      * @var string
      */
     protected $password;
 
     /**
-     * Public timeline is cached to keep doing the request too often
-     * @var array
-     */
-    protected $cached_public;
-    /**
-     * Timestamp from the last public timeline cache - so we know when to update
-     * @var int
-     */
-    protected $cached_public_timestamp = 0;
-
-    /**
-     * Last id fetched, used when updating personal timelines
-     * @var int
-     */
-    protected $lastid = 0;
-
-    /**
-     * Headers to send with the request
-     * Header[0] is reserved for an "If-Modified-Since" addition and left blank
-     * @var array of strings
-     */
-    protected $headers = array('',
-                               'X-Twitter-Client: Twitter Callicore - PHP-GTK Twitter Client',
-                               'X-Twitter-Client-Version: 0.1.0-dev',
-                               'X-Twitter-Client-URL: http://callicore.net');
-
-    /**
-     * Checks login credentials for twitter, and stores username pass
-     * if they are correct for future timeline fetches
+     * last response code
      *
-     * @param string $username twitter username
-     * @param string $password twitter password
+     * @var int
+     */
+    protected $lastresponse;
+
+    /**
+     * current rate limit in effect
+     *
+     * @var int
+     */
+    protected $ratelimit;
+
+    /**
+     * rate limit number remaining
+     *
+     * @var int
+     */
+    protected $rateremaining;
+
+    /**
+     * rate reset time as unix timestamp (epoch)
+     *
+     * @var int
+     */
+    protected $ratereset;
+
+    /**
+     * default headers to send with each request
+     *
+     * @var array()
+     */
+    protected $headers;
+
+    /**
+     * last timestamp that hometimeline was hit
+     *
+     * @var int
+     */
+    protected $lasthometimeline;
+
+    /**
+     * last timestamp that usertimeline was hit
+     *
+     * @var int
+     */
+    protected $lastusertimeline;
+
+    /**
+     * last timestamp that mentiontimeline was hit
+     *
+     * @var int
+     */
+    protected $lastmentionstimeline;
+
+    /**
+     * verifies the username and password
+     * then stores them in the class
+     *
+     * @param string $username
+     * @param string $password
      * @return boolean
      */
     public function login($username, $password) {
         $this->username = $username;
         $this->password = $password;
         $worked = $this->process('account/verify_credentials.json');
-        if ($worked) {
-            $this->login = true;
+        if ($worked && $this->lastresponse == 200) {
             return true;
         }
-
-        // username and password are incorrect, unset them
         $this->username = null;
         $this->password = null;
         return false;
     }
 
     /**
-     * Ends a current twitter session
+     * Allows you to set custom headers to send with the request
+     * headers must be in $headername => $headervalue format
+     * will overwrite any currently set headers
      *
+     * @param array $headers
      * @return void
      */
-    public function logout() {
-        $this->username = null;
-        $this->password = null;
-        $this->login = false;
-        $this->process('account/end_session', 0, 'POST');
-    }
-
-    /**
-     * Grabs an array of information about the public timeline
-     *
-     * @return array
-     */
-    public function get_public_timeline() {
-        if ($this->cached_public_timestamp < time()) {
-            $this->cached_public = json_decode(file_get_contents('http://twitter.com/statuses/public_timeline.json'));
-            $this->cached_public_timestamp = time() + 60; // caches every 60 seconds
+    public function set_headers(array $headers) {
+        $this->headers = array();
+        foreach($headers as $name => $value) {
+            $this->headers[] = $name . ': ' . $value;
         }
-        return $this->cached_public;
     }
 
     /**
-     * Grabs an array of information about the private timeline
+     * Grabs the default timeline, or all the posts since $last_id
      *
-     * @return array
+     * @param int $last_id get any tweets earlier than the last id
+     * @return array|false
      */
-    public function get_timeline() {
-        if ($this->login && $this->can_call()) {
-            if (empty($this->lastid)) {
-                $data = $this->process('statuses/friends_timeline.json');
+    public function get_timeline($timeline, $last_id = null) {
+        switch($timeline) {
+            case 'mentions':
+                 $url = 'mentions';
+                 break;
+            case 'user':
+                $url = 'user_timeline';
+                break;
+            default:
+                $url = 'friends_timeline';
+                $timeline = 'home';
+        }
+        if ($this->can_call()) {
+            if (is_null($last_id)) {
+                 $data = $this->process('statuses/' . $url . '.json');
             } else {
-                $data = $this->process('statuses/friends_timeline.json',
-                                       $this->lasttime,
-                                       'GET',
-                                       array('since_id' => $this->lastid));
+                $data = $this->process('statuses/' . $url . '.json', $this->{'last' . $timeline . 'timeline'}, 'GET', array('since_id' => $last_id));
             }
-            if ($data) {
-                $this->lastid = $data[0]->id;
-            }
-            $this->lasttime = time();
+            $this->{'last' . $timeline . 'timeline'} = time();
             return $data;
         }
-        return array();
+        return false;
     }
 
     /**
-     * Sends a message to twitter
+     * Posts a new message
      *
-     * @param string $message data to send
+     * @param string $message text of message to post
      * @return boolean
      */
     public function send($message) {
-        if ($this->login && $this->can_call()) {
+        if ($this->can_call()) {
             $data = $this->process('statuses/update.json', 0, 'POST', array('status' => $message));
             if ($data) {
                 return true;
             }
+            return false;
+        }
+    }
+
+    /**
+     * Can we do the api call, checks that we haven't hit the rate limit,
+     * if we have hit the rate limit then we haven't hit the reset time,
+     * and checks to see if we're logged in
+     *
+     * @return boolean
+     */
+    public function can_call() {
+       if ($this->username && $this->password &&
+           (is_null($this->ratelimit) || ($this->rateremaining > $this->ratelimit
+            || $this->ratereset != time()))) {
+            return true;
         }
         return false;
     }
 
     /**
-     * Checks to see if twitter can be queried
+     * Actually does the http request to the twitter site
      *
-     * @return boolean
-     */
-    protected function can_call() {
-        if (!$this->login) {
-            return false;
-        }
-        $worked = $this->process('account/rate_limit_status.json');
-        return ($worked->remaining_hits > 1);
-    }
-
-    /**
-     * Main worker for the class, queries twitter and returns json information
-     * which is then decoded
-     *
-     * @return array
+     * @param string $url api method we want to hit
+     * @param int $date date of last call to url api method
+     * @param string $type GET or POST
+     * @param array|null $data data to send with post or get
+     * @return mixed
      */
     protected function process($url, $date = 0, $type = 'GET', $data = null) {
-        // add caching header
-        $this->headers[0] = 'If-Modified-Since: ' . date(DATE_RFC822, $date);
+        $headers = $this->headers;
 
-        // set data into http stream context
+        // add caching header
+        $headers[] = 'If-Modified-Since: ' . date(DATE_RFC822, $date);
+        $headers[] = 'Content-type: text/plain';
+
+        // set up options for the request
         $options = array(
             'http' => array(
                 'method' => $type,
-                'header' => $this->headers)
-            );
+                'header' => $headers)
+        );
+
         if (!is_null($data)) {
             $options['http']['content'] = http_build_query($data);
         }
-        $context = stream_context_create($options);
 
-        // send username and password, or just plain URL
+        $context = stream_context_create($options);
         if ($this->username && $this->password) {
-            $base = 'http://' . urlencode($this->username) . ':' . urlencode($this->password)
-            . '@twitter.com/';
+             $base = 'http://' . urlencode($this->username) . ':' . urlencode($this->password)
+                    . '@twitter.com/';
         } else {
             $base = 'http://twitter.com/';
         }
 
-        // stack on error swallower for file_get_contents
-        set_error_handler(array($this,'swallow_error'));
+        $this->lastresponse = null;
+        //set_error_handler(array($this,'swallow_error'));
         $string = file_get_contents($base . $url, false, $context);
-        restore_error_handler();
+        //restore_error_handler();
+
+        // get our response status and store it
+        sscanf($http_response_header[0], 'HTTP/%s %s', $http_version, $returncode);
+        $this->lastresponse = $returncode;
+
+        // parse out rate response headers
+        foreach($http_response_header as $value) {
+            if (strpos($value, 'X-RateLimit') === 0) {
+                $data = explode(':', $value, 2);
+                $data = array_map('trim', $data);
+                if ($data[0] === 'X-RateLimit-Limit') {
+                    $this->ratelimit = intval($data[1]);
+                } elseif ($data[0] === 'X-RateLimit-Remaining') {
+                    $this->rateremaining = intval($data[1]);
+                } elseif ($data[0] === 'X-RateLimit-Reset') {
+                    $this->ratereset = intval($data[1]);
+                }
+            }
+        }
 
         return json_decode($string);
     }
 
     /**
-     * Actually a private function - DO NOT USE
-     * This is a php error handler to swallow PHP streams errors
+     * Swallows all errors from file_get_contents
+     * should be handled more elegantly at some point
      *
-     * @param int    $errno  error code
-     * @param string $errstr error message
+     * @access private
+     * @param int $errno
+     * @param string $errstr
      * @return void
      */
-    public function swallow_error($errno, $errstr) {}
+    public function swallow_error($errno, $errstr) {} // this should be treated as private
 }
