@@ -1,0 +1,27 @@
+<?php
+/**
+ * twitter.phpg - bootstrap file
+ *
+ * This is released under the MIT, see license.txt for details
+ *
+ * @author       Elizabeth Smith <auroraeosrose@php.net>
+ * @copyright    Elizabeth Smith (c)2009
+ * @link         http://callicore.net
+ * @license      http://www.opensource.org/licenses/mit-license.php MIT
+ * @version      $Id: twitter.phpg 17 2009-04-25 21:30:35Z auroraeosrose $
+ * @since        Php 5.3.0
+ * @package      callicore
+ * @subpackage   twitter
+ * @filesource
+ */
+
+// base callicore library
+include __DIR__ . '/../lib/Lib.php';
+
+// twitter application library
+include 'Twitter.php';
+
+// application class
+use \Callicore\Twitter\Client;
+$twitter = new Client();
+$twitter->run();
